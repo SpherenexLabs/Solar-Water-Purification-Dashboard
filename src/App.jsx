@@ -12,13 +12,11 @@ const LOG_LIMIT = 10;
 
 const optionButtons = [
   { key: "normal", label: "Normal", value: 1 },
-  { key: "uv", label: "UV", value: 2 },
   { key: "ro", label: "RO", value: 3 },
-  { key: "uv_ro", label: "UV + RO", value: 4 },
-  { key: "tds", label: "TDS", value: 5 },
-  { key: "tds_ro", label: "TDS + RO", value: 6 },
-  { key: "dispense", label: "Dispense Water", value: 7 },
-  { key: "pump_off", label: "Pump Off", value: 8 }
+  { key: "tds", label: "TDS", value: 2 },
+  { key: "tds_ro", label: "TDS + RO", value: 4 },
+  { key: "dispense", label: "Dispense Water", value: 5 },
+  { key: "pump_off", label: "Pump Off", value: 6 }
 ];
 
 function formatTime(ts) {
@@ -140,6 +138,9 @@ export default function App() {
       unsubSensors();
       unsubOption();
       unsubLogs();
+      if (resetTimeoutRef.current) {
+        clearTimeout(resetTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -214,9 +215,22 @@ export default function App() {
     });
   }, [usageSummary, logs.length]);
 
+  const resetTimeoutRef = useRef(null);
+
   const setOptionValue = async (value) => {
     await set(ref(db, OPTION_PATH), value);
     setControls((prev) => ({ ...prev, option: value }));
+
+    // Clear any existing timeout
+    if (resetTimeoutRef.current) {
+      clearTimeout(resetTimeoutRef.current);
+    }
+
+    // Auto-reset to 0 after 5 seconds
+    resetTimeoutRef.current = setTimeout(async () => {
+      await set(ref(db, OPTION_PATH), 0);
+      setControls((prev) => ({ ...prev, option: 0 }));
+    }, 5000);
   };
 
   const saveCurrentLog = async () => {
