@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-// Firebase client is configured in the project root; step out of src to import it
 import { db } from "../firebase";
 import { ref, onValue, set, push } from "firebase/database";
 import "./App.css";
@@ -8,7 +7,9 @@ const SENSOR_PATH = "Water_purifier";
 const LOG_PATH = "Water_purifier/logs";
 const USAGE_SUMMARY_PATH = "Water_purifier/usageSummary";
 const OPTION_PATH = "Water_purifier/Option";
+
 const LOG_LIMIT = 10;
+const OPTION_HOLD_SECONDS = 15;
 
 const optionButtons = [
   { key: "normal", label: "Normal", value: 1 },
@@ -67,10 +68,14 @@ function getAlerts(data) {
   if (data.battery < 25) {
     alerts.push("Low battery warning.");
   }
+
   return alerts;
 }
 
 export default function App() {
+  const resetTimeoutRef = useRef(null);
+  const lastAlertSignatureRef = useRef("");
+
   const [sensorData, setSensorData] = useState({
     battery: 0,
     current: 0,
@@ -82,13 +87,12 @@ export default function App() {
     temperature: 0,
     solarCurrent: 0,
     solarStatus: "Not Charging",
-    option: 1,
+    option: 0,
     timestamp: null
   });
 
   const [controls, setControls] = useState({
-    // retained for compatibility; only option is used now
-    option: 1
+    option: 0
   });
 
   const [logs, setLogs] = useState([]);
@@ -113,18 +117,19 @@ export default function App() {
         solarCurrent: Number(data.SolarCurrent || 0),
         solarStatus:
           Number(data.SolarCurrent || 0) > 0.05 ? "Charging" : "Not Charging",
-        option: Number(data.Option || 1),
+        option: Number(data.Option || 0),
         timestamp: data.timestamp || Date.now()
       });
     });
 
     const unsubOption = onValue(optionRef, (snapshot) => {
-      const value = snapshot.val();
-      setControls((prev) => ({ ...prev, option: Number(value || 1) }));
+      const value = Number(snapshot.val() || 0);
+      setControls((prev) => ({ ...prev, option: value }));
     });
 
     const unsubLogs = onValue(logRef, (snapshot) => {
       const data = snapshot.val() || {};
+
       const arr = Object.keys(data).map((key) => ({
         id: key,
         ...data[key]
@@ -138,6 +143,7 @@ export default function App() {
       unsubSensors();
       unsubOption();
       unsubLogs();
+
       if (resetTimeoutRef.current) {
         clearTimeout(resetTimeoutRef.current);
       }
@@ -152,10 +158,9 @@ export default function App() {
     return getAlerts(sensorData);
   }, [sensorData]);
 
-  const lastAlertSignatureRef = useRef("");
-
   useEffect(() => {
     const signature = alerts.join(" | ");
+
     if (signature && signature !== lastAlertSignatureRef.current) {
       alert(`Alerts detected:\n- ${alerts.join("\n- ")}`);
       lastAlertSignatureRef.current = signature;
@@ -183,10 +188,14 @@ export default function App() {
     }
 
     const totalCycles = logs.length;
+
     const avgTDS =
       logs.reduce((sum, item) => sum + Number(item.tds || 0), 0) / totalCycles;
+
     const avgTurb =
-      logs.reduce((sum, item) => sum + Number(item.turb || 0), 0) / totalCycles;
+      logs.reduce((sum, item) => sum + Number(item.turb || 0), 0) /
+      totalCycles;
+
     const avgBattery =
       logs.reduce((sum, item) => sum + Number(item.battery || 0), 0) /
       totalCycles;
@@ -209,28 +218,42 @@ export default function App() {
       avgBattery: Number(usageSummary.avgBattery)
     };
 
-    // Persist latest usage summary for backend visibility
-    set(ref(db, USAGE_SUMMARY_PATH), summaryPayload).catch(() => {
-      /* ignore write errors in UI */
-    });
+    set(ref(db, USAGE_SUMMARY_PATH), summaryPayload).catch(() => {});
   }, [usageSummary, logs.length]);
 
-  const resetTimeoutRef = useRef(null);
+  const setOptionValue = async (value, triggerDispense = false) => {
+    try {
+      await set(ref(db, OPTION_PATH), value);
+      setControls((prev) => ({ ...prev, option: value }));
 
-  const setOptionValue = async (value) => {
-    await set(ref(db, OPTION_PATH), value);
-    setControls((prev) => ({ ...prev, option: value }));
+      if (resetTimeoutRef.current) {
+        clearTimeout(resetTimeoutRef.current);
+      }
 
-    // Clear any existing timeout
-    if (resetTimeoutRef.current) {
-      clearTimeout(resetTimeoutRef.current);
+      // If dispense should be triggered (for filter modes), send it after a short delay
+      if (triggerDispense) {
+        setTimeout(async () => {
+          try {
+            await set(ref(db, OPTION_PATH), 5); // 5 = Dispense Water
+            setControls((prev) => ({ ...prev, option: 5 }));
+          } catch (error) {
+            console.error("Dispense trigger failed:", error);
+          }
+        }, 100);
+      }
+
+      resetTimeoutRef.current = setTimeout(async () => {
+        try {
+          await set(ref(db, OPTION_PATH), 0);
+          setControls((prev) => ({ ...prev, option: 0 }));
+        } catch (error) {
+          console.error("Auto reset failed:", error);
+        }
+      }, OPTION_HOLD_SECONDS * 1000);
+    } catch (error) {
+      console.error("Option send failed:", error);
+      alert("Failed to send option value to Firebase.");
     }
-
-    // Auto-reset to 0 after 5 seconds
-    resetTimeoutRef.current = setTimeout(async () => {
-      await set(ref(db, OPTION_PATH), 0);
-      setControls((prev) => ({ ...prev, option: 0 }));
-    }, 5000);
   };
 
   const saveCurrentLog = async () => {
@@ -252,6 +275,7 @@ export default function App() {
 
     const newLogRef = push(ref(db, LOG_PATH));
     await set(newLogRef, logEntry);
+
     alert("Current reading saved to logs.");
   };
 
@@ -275,27 +299,33 @@ export default function App() {
         <section className="grid top-grid">
           <div className="card highlight">
             <h2>System Overview</h2>
+
             <div className="overview-grid">
               <div className="metric">
                 <span>Battery</span>
                 <strong>{sensorData.battery.toFixed(1)}%</strong>
               </div>
+
               <div className="metric">
                 <span>Battery Health</span>
                 <strong>{batteryHealth}</strong>
               </div>
+
               <div className="metric">
                 <span>Solar Status</span>
                 <strong>{sensorData.solarStatus}</strong>
               </div>
+
               <div className="metric">
                 <span>Solar Current</span>
                 <strong>{sensorData.solarCurrent.toFixed(2)} A</strong>
               </div>
+
               <div className="metric">
                 <span>Power Usage</span>
                 <strong>{powerUsage} W</strong>
               </div>
+
               <div className="metric">
                 <span>Updated</span>
                 <strong>{formatTime(sensorData.timestamp)}</strong>
@@ -305,6 +335,7 @@ export default function App() {
 
           <div className="card">
             <h2>Alerts</h2>
+
             {alerts.length === 0 ? (
               <div className="ok-box">No critical alerts. System is stable.</div>
             ) : (
@@ -322,31 +353,38 @@ export default function App() {
         <section className="grid sensor-grid">
           <div className="card">
             <h2>Live Water Quality</h2>
+
             <div className="sensor-list">
               <div className="sensor-row">
                 <span>pH</span>
                 <strong>{sensorData.ph.toFixed(2)}</strong>
               </div>
+
               <div className="sensor-row">
                 <span>TDS</span>
                 <strong>{sensorData.tds.toFixed(2)} ppm</strong>
               </div>
+
               <div className="sensor-row">
                 <span>Turbidity</span>
                 <strong>{sensorData.turb.toFixed(2)} NTU</strong>
               </div>
+
               <div className="sensor-row">
                 <span>Odor / Gas Level</span>
                 <strong>{sensorData.gas.toFixed(0)}</strong>
               </div>
+
               <div className="sensor-row">
                 <span>Water Temperature</span>
                 <strong>{sensorData.temperature.toFixed(1)} °C</strong>
               </div>
+
               <div className="sensor-row">
                 <span>Voltage</span>
                 <strong>{sensorData.voltage.toFixed(2)} V</strong>
               </div>
+
               <div className="sensor-row">
                 <span>Current</span>
                 <strong>{sensorData.current.toFixed(2)} A</strong>
@@ -356,6 +394,7 @@ export default function App() {
 
           <div className="card">
             <h2>Operation Options</h2>
+
             <div className="mode-section">
               <div className="mode-buttons">
                 {optionButtons.map((item) => (
@@ -366,11 +405,20 @@ export default function App() {
                         ? "mode-btn active"
                         : "mode-btn"
                     }
-                    onClick={() => setOptionValue(item.value)}
+                    onClick={() => {
+                      // For filter modes (Normal, RO, TDS, TDS+RO), also trigger dispense
+                      const isFilterMode = [1, 2, 3, 4].includes(item.value);
+                      setOptionValue(item.value, isFilterMode);
+                    }}
                   >
                     {item.label}
                   </button>
                 ))}
+              </div>
+
+              <div className="selected-option-box">
+                Current Firebase Option Value:{" "}
+                <strong>{controls.option}</strong>
               </div>
             </div>
 
@@ -383,19 +431,23 @@ export default function App() {
         <section className="grid summary-grid">
           <div className="card">
             <h2>Usage Summary</h2>
+
             <div className="overview-grid">
               <div className="metric">
                 <span>Saved Cycles</span>
                 <strong>{usageSummary.totalCycles}</strong>
               </div>
+
               <div className="metric">
                 <span>Average TDS</span>
                 <strong>{usageSummary.avgTDS}</strong>
               </div>
+
               <div className="metric">
                 <span>Average Turbidity</span>
                 <strong>{usageSummary.avgTurb}</strong>
               </div>
+
               <div className="metric">
                 <span>Average Battery</span>
                 <strong>{usageSummary.avgBattery}%</strong>
@@ -405,8 +457,10 @@ export default function App() {
 
           <div className="card">
             <h2>Color-Coded Quality Result</h2>
+
             <div className={`quality-box ${waterStatus.color}`}>
               <div className="quality-title">{waterStatus.label}</div>
+
               <p>
                 Water quality is automatically evaluated using pH, TDS,
                 turbidity, and odor level.
@@ -416,7 +470,8 @@ export default function App() {
         </section>
 
         <section className="card">
-          <h2>Previous Filtration Logs (Last 10)</h2>
+          <h2>Previous Filtration Logs Last 10</h2>
+
           <div className="table-wrapper">
             <table>
               <thead>
@@ -430,6 +485,7 @@ export default function App() {
                   <th>Battery</th>
                 </tr>
               </thead>
+
               <tbody>
                 {logs.length === 0 ? (
                   <tr>
@@ -441,6 +497,7 @@ export default function App() {
                   logs.map((log) => (
                     <tr key={log.id}>
                       <td>{formatTime(log.timestamp)}</td>
+
                       <td>
                         <span
                           className={
@@ -452,6 +509,7 @@ export default function App() {
                           {log.waterStatus}
                         </span>
                       </td>
+
                       <td>{log.option || "-"}</td>
                       <td>{Number(log.ph || 0).toFixed(2)}</td>
                       <td>{Number(log.tds || 0).toFixed(1)}</td>
