@@ -366,3 +366,34 @@ th {
     text-align: left;
   }
 }
+.mode-btn {
+  padding: 14px 18px;
+  border: none;
+  border-radius: 14px;
+  background: #eef4ff;
+  color: #123;
+  font-weight: 700;
+  cursor: pointer;
+  transition: 0.25s ease;
+}
+
+.mode-btn:hover {
+  transform: translateY(-2px);
+  background: #dceaff;
+}
+
+.mode-btn.active {
+  background: linear-gradient(135deg, #0066ff, #00b7ff);
+  color: white;
+  box-shadow: 0 8px 20px rgba(0, 102, 255, 0.35);
+}
+
+.mode-btn:nth-child(2) {
+  background: linear-gradient(135deg, #ff9800, #ff5722);
+  color: white;
+}
+
+.mode-btn:nth-child(2).active {
+  background: linear-gradient(135deg, #e65100, #bf360c);
+  box-shadow: 0 8px 20px rgba(255, 87, 34, 0.4);
+}
