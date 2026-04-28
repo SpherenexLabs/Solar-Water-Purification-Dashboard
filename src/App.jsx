@@ -544,13 +544,14 @@ const LOG_LIMIT = 10;
 const OPTION_HOLD_SECONDS = 15;
 
 const optionButtons = [
-  { key: "normal", label: "Full Cycle", value: 1 },
+  { key: "normal", label: "Full Cycle", value: 1, triggerDispense: true },
   { key: "bypass_flush", label: "Bypass / Flush Mode", value: 3 },
-  { key: "ro", label: "RO + UV", value: 7 },
-  { key: "tds", label: "TDS + UV", value: 2 },
-  { key: "tds_ro", label: "TDS + RO", value: 4 },
+  { key: "ro", label: "RO + UV", value: 7, triggerDispense: true },
+  { key: "tds", label: "TDS + UV", value: 2, triggerDispense: true },
+  { key: "tds_ro", label: "TDS + RO", value: 4, triggerDispense: true },
   { key: "dispense", label: "Emergency Quick Mode", value: 5 },
-  { key: "pump_off", label: "Pump Off", value: 6 }
+  { key: "pump_off", label: "Pump Off", value: 6 },
+  { key: "dispenser", label: "Dispenser", value: 1 }
 ];
 
 function formatTime(ts) {
@@ -631,6 +632,7 @@ export default function App() {
   const [controls, setControls] = useState({
     option: 0
   });
+  const [selectedOptionKey, setSelectedOptionKey] = useState(null);
 
   const [logs, setLogs] = useState([]);
 
@@ -662,6 +664,14 @@ export default function App() {
     const unsubOption = onValue(optionRef, (snapshot) => {
       const value = Number(snapshot.val() || 0);
       setControls((prev) => ({ ...prev, option: value }));
+      setSelectedOptionKey((prevKey) => {
+        if (value === 0) return null;
+
+        const prevButton = optionButtons.find((item) => item.key === prevKey);
+        if (prevButton?.value === value) return prevKey;
+
+        return optionButtons.find((item) => item.value === value)?.key || null;
+      });
     });
 
     const unsubLogs = onValue(logRef, (snapshot) => {
@@ -758,10 +768,15 @@ export default function App() {
     set(ref(db, USAGE_SUMMARY_PATH), summaryPayload).catch(() => {});
   }, [usageSummary, logs.length]);
 
-  const setOptionValue = async (value, triggerDispense = false) => {
+  const setOptionValue = async (
+    value,
+    triggerDispense = false,
+    selectedKey = null
+  ) => {
     try {
       await set(ref(db, OPTION_PATH), value);
       setControls((prev) => ({ ...prev, option: value }));
+      setSelectedOptionKey(selectedKey);
 
       if (resetTimeoutRef.current) {
         clearTimeout(resetTimeoutRef.current);
@@ -772,6 +787,7 @@ export default function App() {
           try {
             await set(ref(db, OPTION_PATH), 5);
             setControls((prev) => ({ ...prev, option: 5 }));
+            setSelectedOptionKey("dispense");
           } catch (error) {
             console.error("Dispense trigger failed:", error);
           }
@@ -782,6 +798,7 @@ export default function App() {
         try {
           await set(ref(db, OPTION_PATH), 0);
           setControls((prev) => ({ ...prev, option: 0 }));
+          setSelectedOptionKey(null);
         } catch (error) {
           console.error("Auto reset failed:", error);
         }
@@ -937,13 +954,18 @@ export default function App() {
                   <button
                     key={item.key}
                     className={
-                      controls.option === item.value
+                      selectedOptionKey === item.key
                         ? "mode-btn active"
                         : "mode-btn"
                     }
                     onClick={() => {
-                      const isFilterMode = [1, 2, 4, 7].includes(item.value);
-                      setOptionValue(item.value, isFilterMode);
+                      const shouldTriggerDispense =
+                        item.triggerDispense ?? false;
+                      setOptionValue(
+                        item.value,
+                        shouldTriggerDispense,
+                        item.key
+                      );
                     }}
                   >
                     {item.label}
